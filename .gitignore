@@ -1,0 +1,31 @@
+# Source reference clone used during development
+source_module/
+
+# Python bytecode and local caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Runtime/render artifacts
+render_cache/
+core/render_cache/
+*.log
+
+# Local secrets and machine-specific config
+.env
+.env.*
+*.local
+
+# Editor/OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
