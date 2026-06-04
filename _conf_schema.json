@@ -52,5 +52,14 @@
     "description": "允许私聊订阅远行商人",
     "hint": "开启后允许用户在私聊中订阅远行商人推送",
     "default": true
+  },
+  "merchant_shortcut_mappings": {
+    "type": "list",
+    "description": "快捷查询指令映射",
+    "hint": "格式：通道=快捷词。通道可填写完整 UMO、group:群号、private:用户ID，或用 *=远商 设置所有通道全局快捷词；多个快捷词可用逗号分隔",
+    "default": [],
+    "items": {
+      "type": "string"
+    }
   }
 }

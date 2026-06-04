@@ -20,11 +20,20 @@ from .core.client import RocomMerchantClient
 from .core.merchant_cache import MerchantCache
 from .core.merchant_parser import merchant_products_from_response
 from .core.merchant_round import cn_tz, current_merchant_round
+from .core.merchant_shortcut import MerchantShortcutStore
 from .core.merchant_subscription import MerchantSubscriptionStore
 from .core.render import Renderer
 
 
 ALL_SUBSCRIPTION_MARKERS = {"全部", "*", ".*"}
+RESERVED_SHORTCUT_COMMANDS = {
+    "洛手远行商人",
+    "订阅洛手远行商人",
+    "取消订阅洛手远行商人",
+    "设置洛手远行商人快捷指令",
+    "查看洛手远行商人快捷指令",
+    "取消洛手远行商人快捷指令",
+}
 
 
 @register(
@@ -46,6 +55,7 @@ class LuoshouMerchantPlugin(Star):
         data_dir = str(StarTools.get_data_dir())
         self.cache = MerchantCache(data_dir)
         self.subscriptions = MerchantSubscriptionStore(data_dir)
+        self.shortcuts = MerchantShortcutStore(data_dir)
         self.renderer = Renderer(
             res_path=self.res_path,
             render_timeout=int(self.config.get("render_timeout", 30000) or 30000),
@@ -61,6 +71,9 @@ class LuoshouMerchantPlugin(Star):
         self.subscription_enabled = self.config.get("merchant_subscription_enabled", True)
         self.refresh_times = self.config.get(
             "merchant_refresh_times", ["08:01", "12:01", "16:01", "20:01"]
+        )
+        self.configured_shortcuts = self._parse_configured_shortcuts(
+            self.config.get("merchant_shortcut_mappings", [])
         )
         self._merchant_refresh_task: Optional[asyncio.Task] = None
         self._merchant_retry_delay_seconds = 240
@@ -83,6 +96,83 @@ class LuoshouMerchantPlugin(Star):
     @filter.command("洛手远行商人")
     async def query_merchant(self, event: AstrMessageEvent, args: str = ""):
         args_text = self._command_args(event, "洛手远行商人", args)
+        async for result in self._yield_merchant_query(event, args_text):
+            yield result
+
+    @filter.command("设置洛手远行商人快捷指令")
+    async def set_merchant_shortcut(self, event: AstrMessageEvent, args: str = ""):
+        args_text = self._command_args(event, "设置洛手远行商人快捷指令", args)
+        shortcut = self._normalize_shortcut_text(args_text)
+        if not shortcut:
+            yield event.plain_result("请提供快捷指令，例如：/设置洛手远行商人快捷指令 远商")
+            return
+        if not self._is_valid_shortcut(shortcut):
+            yield event.plain_result("这个快捷指令和已有命令冲突，请换一个更短、更独特的词。")
+            return
+        if not event.is_private_chat() and not await self._is_group_admin(event):
+            yield event.plain_result("仅当前群管理员可以设置远行商人快捷指令。")
+            return
+
+        key, target_name = self._shortcut_identity(event)
+        await self.shortcuts.upsert(
+            key,
+            {
+                "key": key,
+                "shortcut": shortcut,
+                "umo": event.unified_msg_origin,
+                "updated_by": str(event.get_sender_id()),
+            },
+        )
+        yield event.plain_result(f"已将{target_name}远行商人快捷查询指令设置为：{shortcut}")
+
+    @filter.command("查看洛手远行商人快捷指令")
+    async def show_merchant_shortcut(self, event: AstrMessageEvent):
+        key, target_name = self._shortcut_identity(event)
+        shortcut = await self.shortcuts.get(key)
+        configured_shortcuts = self._configured_shortcuts_for_event(event)
+        if not shortcut and not configured_shortcuts:
+            yield event.plain_result(f"{target_name}还没有设置远行商人快捷查询指令。")
+            return
+        parts = []
+        if shortcut:
+            parts.append(f"聊天内快捷：{shortcut.get('shortcut')}")
+        if configured_shortcuts:
+            parts.append(f"控制台快捷：{'、'.join(configured_shortcuts)}")
+        yield event.plain_result(f"{target_name}当前远行商人快捷查询指令：\n" + "\n".join(parts))
+
+    @filter.command("取消洛手远行商人快捷指令")
+    async def delete_merchant_shortcut(self, event: AstrMessageEvent):
+        if not event.is_private_chat() and not await self._is_group_admin(event):
+            yield event.plain_result("仅当前群管理员可以取消远行商人快捷指令。")
+            return
+
+        key, target_name = self._shortcut_identity(event)
+        deleted = await self.shortcuts.delete(key)
+        if deleted:
+            yield event.plain_result(f"已取消{target_name}远行商人快捷查询指令。")
+            return
+        yield event.plain_result(f"{target_name}当前没有远行商人快捷查询指令。")
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def query_merchant_by_shortcut(self, event: AstrMessageEvent):
+        message = self._normalize_shortcut_text(getattr(event, "message_str", "") or "")
+        if not message:
+            return
+
+        key, _ = self._shortcut_identity(event)
+        shortcut = await self.shortcuts.get(key)
+        shortcuts = self._event_shortcuts(event, shortcut)
+        if message not in shortcuts:
+            return
+
+        handled = False
+        async for result in self._yield_merchant_query(event, ""):
+            handled = True
+            yield result
+        if handled:
+            self._stop_event(event)
+
+    async def _yield_merchant_query(self, event: AstrMessageEvent, args_text: str = ""):
         force_refresh = self._is_refresh_request(args_text)
         if force_refresh:
             data, from_cache, error = await self._refresh_current_merchant_data(
@@ -459,12 +549,130 @@ class LuoshouMerchantPlugin(Star):
         tokens = self._split_subscription_items(args_text)
         return any(token in {"刷新", "强制刷新", "refresh", "force"} for token in tokens)
 
+    def _normalize_shortcut_text(self, value: str) -> str:
+        text = str(value or "").strip()
+        while text.startswith("/"):
+            text = text[1:].strip()
+        return text
+
+    def _event_shortcuts(
+        self, event: AstrMessageEvent, stored_shortcut: Optional[Dict[str, Any]]
+    ) -> set[str]:
+        shortcuts = set(self._configured_shortcuts_for_event(event))
+        if stored_shortcut:
+            shortcut = self._normalize_shortcut_text(stored_shortcut.get("shortcut") or "")
+            if shortcut:
+                shortcuts.add(shortcut)
+        return {shortcut for shortcut in shortcuts if self._is_valid_shortcut(shortcut)}
+
+    def _configured_shortcuts_for_event(self, event: AstrMessageEvent) -> List[str]:
+        if not self.configured_shortcuts:
+            return []
+        matched = []
+        seen = set()
+        for channel in [*self._shortcut_channel_candidates(event), "*"]:
+            for shortcut in self.configured_shortcuts.get(channel, []):
+                if shortcut in seen:
+                    continue
+                matched.append(shortcut)
+                seen.add(shortcut)
+        return matched
+
+    def _shortcut_channel_candidates(self, event: AstrMessageEvent) -> List[str]:
+        candidates = []
+        umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+        if umo:
+            candidates.append(umo)
+
+        key, _ = self._shortcut_identity(event)
+        if key:
+            candidates.append(key)
+
+        if event.is_private_chat():
+            sender_id = self._safe_event_value(event, "get_sender_id")
+            if sender_id:
+                candidates.append(f"private:{sender_id}")
+        else:
+            group_id = self._safe_event_value(event, "get_group_id")
+            if group_id:
+                candidates.append(f"group:{group_id}")
+        return candidates
+
+    def _parse_configured_shortcuts(self, raw_value: Any) -> Dict[str, List[str]]:
+        mappings: Dict[str, List[str]] = {}
+        if not isinstance(raw_value, list):
+            return mappings
+
+        for item in raw_value:
+            channel, shortcuts = self._parse_configured_shortcut_item(item)
+            if not channel or not shortcuts:
+                continue
+            bucket = mappings.setdefault(channel, [])
+            for shortcut in shortcuts:
+                if shortcut not in bucket:
+                    bucket.append(shortcut)
+        return mappings
+
+    def _parse_configured_shortcut_item(self, item: Any) -> Tuple[str, List[str]]:
+        if isinstance(item, dict):
+            channel = str(item.get("channel") or item.get("key") or "").strip()
+            shortcut_value = item.get("shortcut") or item.get("command") or ""
+            return channel, self._split_configured_shortcuts(shortcut_value)
+
+        text = str(item or "").strip()
+        if "=" not in text:
+            return "", []
+        channel, shortcut_value = text.split("=", 1)
+        return channel.strip(), self._split_configured_shortcuts(shortcut_value)
+
+    def _split_configured_shortcuts(self, value: Any) -> List[str]:
+        if isinstance(value, list):
+            raw_parts = value
+        else:
+            raw_parts = re.split(r"[,，、|；;]+", str(value or ""))
+        shortcuts = []
+        seen = set()
+        for part in raw_parts:
+            shortcut = self._normalize_shortcut_text(str(part or ""))
+            if not shortcut or shortcut in seen or not self._is_valid_shortcut(shortcut):
+                continue
+            shortcuts.append(shortcut)
+            seen.add(shortcut)
+        return shortcuts
+
+    def _is_valid_shortcut(self, shortcut: str) -> bool:
+        if not shortcut:
+            return False
+        if any(char.isspace() for char in shortcut):
+            return False
+        normalized_reserved = {self._normalize_shortcut_text(item) for item in RESERVED_SHORTCUT_COMMANDS}
+        return shortcut not in normalized_reserved
+
+    def _stop_event(self, event: AstrMessageEvent):
+        stop_event = getattr(event, "stop_event", None)
+        if callable(stop_event):
+            stop_event()
+
+    def _safe_event_value(self, event: AstrMessageEvent, method_name: str) -> str:
+        method = getattr(event, method_name, None)
+        if not callable(method):
+            return ""
+        try:
+            return str(method() or "").strip()
+        except Exception:
+            return ""
+
     def _subscription_identity(
         self, event: AstrMessageEvent
     ) -> Tuple[str, str, str]:
         if event.is_private_chat():
             return f"private_{event.get_sender_id()}", "个人订阅", "你的个人"
         return str(event.get_group_id()), "群订阅", "本群"
+
+    def _shortcut_identity(self, event: AstrMessageEvent) -> Tuple[str, str]:
+        if event.is_private_chat():
+            return f"private_{event.get_sender_id()}", "你的个人"
+        return str(event.get_group_id()), "本群"
 
     def _serializable_round_info(self, round_info: Dict[str, Any]) -> Dict[str, Any]:
         cleaned = dict(round_info)

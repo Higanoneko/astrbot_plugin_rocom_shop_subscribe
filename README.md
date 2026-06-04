@@ -22,6 +22,7 @@
 - 手动 `刷新` / `强制刷新` 会强制请求最新商城状态并覆盖缓存。
 - 定时刷新沿用原版时间点，默认每日 `08:01 / 12:01 / 16:01 / 20:01` 附近强制刷新缓存。
 - 订阅支持原版指定商品模式，也支持 `全部`、`*`、`.*` 通配全部商品。
+- 支持按群聊、私聊或控制台配置快捷查询指令，快捷词等效普通 `/洛手远行商人`。
 
 ---
 
@@ -57,6 +58,25 @@ playwright install chromium
 | `merchant_subscription_enabled` | `true` | 是否在定时刷新后处理订阅推送 |
 | `merchant_subscription_items` | `["国王球", "棱镜球", "炫彩精灵蛋"]` | 未填写商品且未使用通配符时的默认订阅商品 |
 | `merchant_private_subscription_enabled` | `true` | 是否允许私聊订阅 |
+| `merchant_shortcut_mappings` | `[]` | 控制台快捷查询指令映射，格式为 `通道=快捷词` |
+
+`merchant_shortcut_mappings` 示例：
+
+```text
+*=远商
+group:123456789=商人
+private:987654321=远行
+aiocqhttp:GroupMessage:123456789=洛手商人
+```
+
+通道支持：
+
+- `*`：所有通道的全局快捷词。
+- `group:群号`：指定群聊。
+- `private:用户ID`：指定私聊用户。
+- 完整 UMO：可通过 AstrBot `/sid` 查看，例如 `aiocqhttp:GroupMessage:123456789`。
+
+同一个通道可以配置多个快捷词，用逗号分隔，例如 `*=远商,商人`。
 
 ---
 
@@ -74,8 +94,15 @@ playwright install chromium
 | `/订阅洛手远行商人 [1/0] *` | 与 `全部` 等价 |
 | `/订阅洛手远行商人 [1/0] .*` | 与 `全部` 等价 |
 | `/取消订阅洛手远行商人` | 取消当前群或当前私聊的远行商人订阅 |
+| `/设置洛手远行商人快捷指令 <快捷词>` | 为当前群或当前私聊设置快捷查询词，命中后等效 `/洛手远行商人` |
+| `/查看洛手远行商人快捷指令` | 查看当前群或当前私聊的快捷查询词 |
+| `/取消洛手远行商人快捷指令` | 删除当前群或当前私聊的快捷查询词 |
 
 群聊中订阅和取消订阅需要群主、群管理员或 bot 管理员权限；私聊订阅由 `merchant_private_subscription_enabled` 控制。
+
+群聊中设置和取消快捷查询指令同样需要群主、群管理员或 bot 管理员权限。快捷词按精确文本匹配，例如设置为 `远商` 后，直接发送 `远商` 或 `/远商` 都会触发查询。
+
+聊天内设置和控制台设置会同时生效；控制台中的 `*` 全局快捷词会对所有通道生效。
 
 ---
 
@@ -94,7 +121,7 @@ playwright install chromium
 
 如果普通查询时当前轮次还没有缓存，插件会请求接口并写入缓存；之后同轮次普通查询会直接使用缓存。
 
-缓存文件默认保存在 AstrBot 插件数据目录下，文件名为 `rocom_shop_cache.json`。订阅文件名为 `rocom_merchant_subscriptions.json`。
+缓存文件默认保存在 AstrBot 插件数据目录下，文件名为 `rocom_shop_cache.json`。订阅文件名为 `rocom_merchant_subscriptions.json`，快捷指令文件名为 `rocom_merchant_shortcuts.json`。
 
 ---
 
@@ -114,6 +141,8 @@ playwright install chromium
 /订阅洛手远行商人 0 全部
 /订阅洛手远行商人 *
 /取消订阅洛手远行商人
+/设置洛手远行商人快捷指令 远商
+/取消洛手远行商人快捷指令
 ```
 
 ---
@@ -130,6 +159,7 @@ astrbot_plugin_rocom_shop_subscribe/
 │   ├── merchant_cache.py      # 当前轮次商城缓存
 │   ├── merchant_parser.py     # API 响应解析
 │   ├── merchant_round.py      # 中国时区轮次与刷新时间计算
+│   ├── merchant_shortcut.py   # 快捷查询指令持久化
 │   ├── merchant_subscription.py # 订阅持久化
 │   └── render.py              # HTML 到图片渲染器
 ├── render/yuanxing-shangren/  # 远行商人渲染模板
