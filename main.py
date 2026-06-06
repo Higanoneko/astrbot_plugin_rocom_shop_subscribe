@@ -394,7 +394,7 @@ class LuoshouMerchantPlugin(Star):
         round_info = current_merchant_round()
         cached = await self.cache.get(round_info["round_id"])
         if cached:
-            return self._with_live_round_info(cached, round_info), True, ""
+            return self._merchant_data_from_cache(cached, round_info), True, ""
         return await self._refresh_current_merchant_data(allow_cache_fallback=False)
 
     async def _refresh_current_merchant_data(
@@ -406,18 +406,22 @@ class LuoshouMerchantPlugin(Star):
         response = await self.client.get_merchant_info(refresh=True)
         if response is None:
             if allow_cache_fallback and cached:
-                return self._with_live_round_info(cached, round_info), True, self.client.get_last_error()
+                return self._merchant_data_from_cache(cached, round_info), True, self.client.get_last_error()
             return None, False, self.client.get_last_error()
 
-        activity, products, history_groups = merchant_products_from_response(response)
-        data = {
-            "activity": activity,
-            "products": products,
-            "history_groups": history_groups,
+        cache_entry = {
+            "raw_data": copy.deepcopy(response),
             "round_info": self._serializable_round_info(round_info),
             "fetched_at": int(time.time()),
         }
-        await self.cache.set(round_info["round_id"], data)
+        await self.cache.set(round_info["round_id"], cache_entry)
+        data = self._merchant_data_from_cache(cache_entry, round_info)
+        products = data.get("products") or []
+        product_names = "、".join([str(product.get("name") or "未知商品") for product in products])
+        logger.info(
+            "[Luoshou Merchant] 已刷新并写入远行商人缓存："
+            f"round_id={round_info['round_id']} products={product_names or '空'}"
+        )
         return data, False, ""
 
     def _next_refresh_time(self, now: datetime) -> datetime:
@@ -451,9 +455,22 @@ class LuoshouMerchantPlugin(Star):
             ]
         return sorted(parsed_times)
 
-    def _with_live_round_info(
+    def _merchant_data_from_cache(
         self, cached: Dict[str, Any], round_info: Dict[str, Any]
     ) -> Dict[str, Any]:
+        raw_data = cached.get("raw_data")
+        if isinstance(raw_data, dict):
+            activity, products, history_groups = merchant_products_from_response(raw_data)
+            return {
+                "raw_data": copy.deepcopy(raw_data),
+                "activity": activity,
+                "products": products,
+                "history_groups": history_groups,
+                "round_info": self._serializable_round_info(round_info),
+                "fetched_at": cached.get("fetched_at") or cached.get("cached_at"),
+                "cached_at": cached.get("cached_at"),
+            }
+
         data = copy.deepcopy(cached)
         data["round_info"] = self._serializable_round_info(round_info)
         return data

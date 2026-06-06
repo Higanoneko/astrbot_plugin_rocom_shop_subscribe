@@ -41,6 +41,15 @@ def merchant_products_from_response(
             if product.get("is_active"):
                 active_products.append(product)
 
+    random_goods_products = _products_from_random_goods(
+        random_goods if isinstance(random_goods, list) else [],
+        all_products,
+        activity,
+        now_ms,
+    )
+    if random_goods_products:
+        active_products = random_goods_products
+
     return activity, active_products, _merchant_history_groups(all_products, now_ms)
 
 
@@ -57,6 +66,77 @@ def _goods_meta_by_name(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
         for item in items
         if isinstance(item, dict)
         and str(item.get("goods_name", "") or item.get("name", "")).strip()
+    }
+
+
+def _products_from_random_goods(
+    random_goods: List[Dict[str, Any]],
+    scheduled_products: List[Dict[str, Any]],
+    activity: Dict[str, Any],
+    now_ms: int,
+) -> List[Dict[str, Any]]:
+    if not random_goods:
+        return []
+
+    scheduled_by_name = {
+        str(product.get("name", "") or "").strip(): product
+        for product in scheduled_products
+        if str(product.get("name", "") or "").strip()
+    }
+    products = []
+    seen = set()
+    for item in random_goods:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("goods_name", "") or item.get("name", "")).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        scheduled = scheduled_by_name.get(name, {})
+        products.append(_product_from_random_goods_item(item, scheduled, activity, now_ms))
+    return products
+
+
+def _product_from_random_goods_item(
+    item: Dict[str, Any],
+    scheduled: Dict[str, Any],
+    activity: Dict[str, Any],
+    now_ms: int,
+) -> Dict[str, Any]:
+    name = str(item.get("goods_name", "") or item.get("name", "")).strip() or "未知商品"
+    start_ms = _merchant_timestamp_ms(item.get("start_time"))
+    end_ms = _merchant_timestamp_ms(item.get("end_time"))
+    if start_ms is None:
+        start_ms = _merchant_timestamp_ms(scheduled.get("start_ms"))
+    if end_ms is None:
+        end_ms = _merchant_timestamp_ms(scheduled.get("end_ms"))
+    if start_ms is None:
+        start_ms = _merchant_timestamp_ms(activity.get("start_time"))
+    if end_ms is None:
+        end_ms = _merchant_timestamp_ms(activity.get("end_time"))
+
+    return {
+        "name": name,
+        "image": (
+            item.get("icon_url")
+            or item.get("iconUrl")
+            or item.get("goods_icon")
+            or item.get("goodsIcon")
+            or scheduled.get("image")
+            or ""
+        ),
+        "time_label": _format_merchant_window(start_ms, end_ms),
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "is_active": True,
+        "status_label": "当前轮次",
+        "category": scheduled.get("category") or item.get("category") or "商品",
+        "price": item.get("price") if item.get("price") not in (None, "") else scheduled.get("price"),
+        "buy_limit_num": (
+            item.get("buy_limit_num")
+            if item.get("buy_limit_num") not in (None, "")
+            else scheduled.get("buy_limit_num")
+        ),
     }
 
 

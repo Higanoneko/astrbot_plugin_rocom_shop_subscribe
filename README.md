@@ -123,6 +123,8 @@ aiocqhttp:GroupMessage:123456789=洛手商人
 
 缓存文件默认保存在 AstrBot 插件数据目录下，文件名为 `rocom_shop_cache.json`。订阅文件名为 `rocom_merchant_subscriptions.json`，快捷指令文件名为 `rocom_merchant_shortcuts.json`。
 
+商城缓存会保存上游返回的完整 `raw_data`。图片生成和订阅匹配时，会从缓存中的 `raw_data` 重新解析商品列表，而不是只依赖上一次保存的渲染结果。这样上游字段变化或解析逻辑调整后，已有缓存也能按最新解析逻辑重新生成图片。旧版本已写入的解析后缓存仍会兼容读取。
+
 ---
 
 ## 订阅规则
