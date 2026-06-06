@@ -176,7 +176,7 @@ class LuoshouMerchantPlugin(Star):
         force_refresh = self._is_refresh_request(args_text)
         if force_refresh:
             data, from_cache, error = await self._refresh_current_merchant_data(
-                allow_cache_fallback=True
+                allow_cache_fallback=False
             )
         else:
             data, from_cache, error = await self._get_cached_or_refresh_current_merchant_data()
@@ -185,11 +185,6 @@ class LuoshouMerchantPlugin(Star):
                 f"远行商人查询失败：{error or self.client.get_last_error()}"
             )
             return
-
-        if from_cache and force_refresh and error:
-            yield event.plain_result(
-                f"最新商店请求失败，以下为当前轮次缓存：{error or self.client.get_last_error()}"
-            )
 
         img_url = await self._render_merchant_image(data)
         if img_url:
@@ -395,15 +390,19 @@ class LuoshouMerchantPlugin(Star):
         cached = await self.cache.get(round_info["round_id"])
         if cached:
             return self._merchant_data_from_cache(cached, round_info), True, ""
-        return await self._refresh_current_merchant_data(allow_cache_fallback=False)
+        return await self._refresh_current_merchant_data(
+            allow_cache_fallback=False,
+            force_refresh=False,
+        )
 
     async def _refresh_current_merchant_data(
         self,
         allow_cache_fallback: bool,
+        force_refresh: bool = True,
     ) -> Tuple[Optional[Dict[str, Any]], bool, str]:
         round_info = current_merchant_round()
         cached = await self.cache.get(round_info["round_id"])
-        response = await self.client.get_merchant_info(refresh=True)
+        response = await self.client.get_merchant_info(refresh=force_refresh)
         if response is None:
             if allow_cache_fallback and cached:
                 return self._merchant_data_from_cache(cached, round_info), True, self.client.get_last_error()
@@ -418,8 +417,9 @@ class LuoshouMerchantPlugin(Star):
         data = self._merchant_data_from_cache(cache_entry, round_info)
         products = data.get("products") or []
         product_names = "、".join([str(product.get("name") or "未知商品") for product in products])
+        action = "强制刷新" if force_refresh else "普通请求"
         logger.info(
-            "[Luoshou Merchant] 已刷新并写入远行商人缓存："
+            f"[Luoshou Merchant] 已{action}并写入远行商人缓存："
             f"round_id={round_info['round_id']} products={product_names or '空'}"
         )
         return data, False, ""
