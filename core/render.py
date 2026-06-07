@@ -11,7 +11,6 @@ import asyncio
 import base64
 import mimetypes
 import uuid
-import tempfile
 import jinja2
 from typing import Dict, Any, Optional
 from astrbot.api import logger
@@ -31,7 +30,12 @@ class Renderer:
             )
         return cls._jinja_env
 
-    def __init__(self, res_path: str, render_timeout: int = 30000):
+    def __init__(
+        self,
+        res_path: str,
+        render_timeout: int = 30000,
+        output_dir: Optional[str] = None,
+    ):
         self.res_path = res_path
         self.render_timeout = render_timeout
         self._browser = None
@@ -40,7 +44,7 @@ class Renderer:
         self._cache_cleanup_task: Optional[asyncio.Task] = None
         self._browser_launch_mode: Optional[str] = None
         self._output_dir = os.path.abspath(
-            os.path.join(self.res_path, "render_cache")
+            output_dir or os.path.join(self.res_path, "render_cache")
         )
         os.makedirs(self._output_dir, exist_ok=True)
 
@@ -296,10 +300,7 @@ class Renderer:
             page = await context.new_page()
 
             temp_html = os.path.join(
-                os.path.dirname(
-                    os.path.abspath(os.path.join(self.res_path, name))
-                ),
-                f"tmp_{uuid.uuid4().hex[:8]}.html",
+                self._output_dir, f"tmp_{uuid.uuid4().hex[:8]}.html"
             )
             with open(temp_html, "w", encoding="utf-8") as f:
                 f.write(html)

@@ -17,7 +17,7 @@
 
 - 只保留远行商人相关能力，适合和原版 `astrbot_plugin_rocom` 同时安装。
 - 使用 `洛手` 命令前缀，避免和原版 `/远行商人`、`/订阅远行商人` 冲突。
-- 当前轮次查询缓存会持久化到 AstrBot 插件数据目录。
+- 当前轮次查询缓存写入 AstrBot `data/temp`，订阅和快捷指令写入 `data/plugin_data`。
 - 普通查询优先读取缓存，缓存缺失时自动请求接口并写入缓存。
 - 手动 `刷新` / `强制刷新` 会强制请求最新商城状态并覆盖缓存。
 - 定时刷新沿用原版时间点，默认每日 `08:01 / 12:01 / 16:01 / 20:01` 附近强制刷新缓存。
@@ -100,7 +100,7 @@ aiocqhttp:GroupMessage:123456789=洛手商人
 
 群聊中订阅和取消订阅需要群主、群管理员或 bot 管理员权限；私聊订阅由 `merchant_private_subscription_enabled` 控制。
 
-群聊中设置和取消快捷查询指令同样需要群主、群管理员或 bot 管理员权限。快捷词按精确文本匹配，例如设置为 `远商` 后，直接发送 `远商` 或 `/远商` 都会触发查询。
+群聊中设置和取消快捷查询指令同样需要群主、群管理员或 bot 管理员权限。快捷词可作为查询命令头使用，例如设置为 `远商` 后，直接发送 `远商` 或 `/远商` 会触发普通查询，发送 `远商 刷新` 或 `/远商 强制刷新` 会强制刷新缓存。
 
 聊天内设置和控制台设置会同时生效；控制台中的 `*` 全局快捷词会对所有通道生效。
 
@@ -121,9 +121,21 @@ aiocqhttp:GroupMessage:123456789=洛手商人
 
 如果普通查询时当前轮次还没有缓存，插件会请求接口并写入缓存；这类普通请求会携带 `refresh=false`。手动刷新和定时自动刷新会携带 `refresh=true`，用于强制刷新上游商城状态。之后同轮次普通查询会直接使用缓存。手动刷新请求失败时会直接返回查询失败，不会回退使用旧缓存。
 
-缓存文件默认保存在 AstrBot 插件数据目录下，文件名为 `rocom_shop_cache.json`。订阅文件名为 `rocom_merchant_subscriptions.json`，快捷指令文件名为 `rocom_merchant_shortcuts.json`。
+运行时文件会按用途拆分保存：
 
-商城缓存会保存上游返回的完整 `raw_data`。图片生成和订阅匹配时，会从缓存中的 `raw_data` 重新解析商品列表，而不是只依赖上一次保存的渲染结果。这样上游字段变化或解析逻辑调整后，已有缓存也能按最新解析逻辑重新生成图片。旧版本已写入的解析后缓存仍会兼容读取。
+```text
+AstrBot/data/temp/astrbot_plugin_rocom_shop_subscribe/
+├── rocom_shop_cache.json          # 当前轮次商城 raw_data 缓存
+└── render_cache/                  # 查询图片和临时渲染 HTML
+
+AstrBot/data/plugin_data/astrbot_plugin_rocom_shop_subscribe/
+├── rocom_merchant_subscriptions.json
+└── rocom_merchant_shortcuts.json
+```
+
+如果 AstrBot 版本较旧，插件无法获取标准 `data` 根目录时，会回退到 `StarTools.get_data_dir()`；此时订阅和快捷指令仍保存在旧版插件数据目录，商城缓存会保存在该目录下的 `temp/` 子目录。
+
+商城缓存会保存上游返回的完整 `raw_data`，同时保存由官方解析链路得到的 `activity`、`products` 和 `history_groups` 快照。图片生成和订阅匹配时，仍会从缓存中的 `raw_data` 重新走官方解析链路，而不是使用额外拼装的商品列表。商品主列表只来自 `merchantActivities`，`random_goods` 只按商品名补充价格和限购信息；如果 `merchantActivities` 为空，行为与官方一致，当前商品列表为空。旧版本已写入的解析后缓存仍会兼容读取。
 
 ---
 

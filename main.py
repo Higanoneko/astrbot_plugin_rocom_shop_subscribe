@@ -26,6 +26,7 @@ from .core.render import Renderer
 
 
 ALL_SUBSCRIPTION_MARKERS = {"全部", "*", ".*"}
+PLUGIN_NAME = "astrbot_plugin_rocom_shop_subscribe"
 RESERVED_SHORTCUT_COMMANDS = {
     "洛手远行商人",
     "订阅洛手远行商人",
@@ -52,13 +53,18 @@ class LuoshouMerchantPlugin(Star):
             wegame_api_key=self.config.get("wegame_api_key", ""),
         )
         self.res_path = os.path.abspath(os.path.dirname(__file__))
-        data_dir = str(StarTools.get_data_dir())
-        self.cache = MerchantCache(data_dir)
-        self.subscriptions = MerchantSubscriptionStore(data_dir)
-        self.shortcuts = MerchantShortcutStore(data_dir)
+        self.persistent_data_dir, self.temp_cache_dir = self._build_storage_dirs()
+        self.cache = MerchantCache(self.temp_cache_dir)
+        self.subscriptions = MerchantSubscriptionStore(self.persistent_data_dir)
+        self.shortcuts = MerchantShortcutStore(self.persistent_data_dir)
         self.renderer = Renderer(
             res_path=self.res_path,
             render_timeout=int(self.config.get("render_timeout", 30000) or 30000),
+            output_dir=os.path.join(self.temp_cache_dir, "render_cache"),
+        )
+        logger.info(
+            "[Luoshou Merchant] 存储目录初始化完成: "
+            f"persistent={self.persistent_data_dir}, temp={self.temp_cache_dir}"
         )
 
         self.default_subscription_items = self.config.get(
@@ -82,6 +88,26 @@ class LuoshouMerchantPlugin(Star):
 
         if self.auto_refresh_enabled:
             self._merchant_refresh_task = asyncio.create_task(self._merchant_refresh_loop())
+
+    def _build_storage_dirs(self) -> Tuple[str, str]:
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            data_root = os.path.abspath(str(get_astrbot_data_path()))
+            persistent_dir = os.path.join(data_root, "plugin_data", PLUGIN_NAME)
+            temp_dir = os.path.join(data_root, "temp", PLUGIN_NAME)
+        except Exception as exc:
+            legacy_dir = os.path.abspath(str(StarTools.get_data_dir()))
+            persistent_dir = legacy_dir
+            temp_dir = os.path.join(legacy_dir, "temp")
+            logger.warning(
+                "[Luoshou Merchant] 无法获取 AstrBot data 根目录，"
+                f"已回退到旧版插件数据目录: {exc}"
+            )
+
+        os.makedirs(persistent_dir, exist_ok=True)
+        os.makedirs(temp_dir, exist_ok=True)
+        return persistent_dir, temp_dir
 
     async def terminate(self):
         if self._merchant_refresh_task and not self._merchant_refresh_task.done():
@@ -162,11 +188,12 @@ class LuoshouMerchantPlugin(Star):
         key, _ = self._shortcut_identity(event)
         shortcut = await self.shortcuts.get(key)
         shortcuts = self._event_shortcuts(event, shortcut)
-        if message not in shortcuts:
+        shortcut_args = self._shortcut_args(message, shortcuts)
+        if shortcut_args is None:
             return
 
         handled = False
-        async for result in self._yield_merchant_query(event, ""):
+        async for result in self._yield_merchant_query(event, shortcut_args):
             handled = True
             yield result
         if handled:
@@ -389,7 +416,8 @@ class LuoshouMerchantPlugin(Star):
         round_info = current_merchant_round()
         cached = await self.cache.get(round_info["round_id"])
         if cached:
-            return self._merchant_data_from_cache(cached, round_info), True, ""
+            data = self._merchant_data_from_cache(cached, round_info)
+            return data, True, ""
         return await self._refresh_current_merchant_data(
             allow_cache_fallback=False,
             force_refresh=False,
@@ -407,14 +435,10 @@ class LuoshouMerchantPlugin(Star):
             if allow_cache_fallback and cached:
                 return self._merchant_data_from_cache(cached, round_info), True, self.client.get_last_error()
             return None, False, self.client.get_last_error()
+        data = self._merchant_data_from_response(response, round_info)
 
-        cache_entry = {
-            "raw_data": copy.deepcopy(response),
-            "round_info": self._serializable_round_info(round_info),
-            "fetched_at": int(time.time()),
-        }
+        cache_entry = self._merchant_cache_entry_from_data(data, force_refresh)
         await self.cache.set(round_info["round_id"], cache_entry)
-        data = self._merchant_data_from_cache(cache_entry, round_info)
         products = data.get("products") or []
         product_names = "、".join([str(product.get("name") or "未知商品") for product in products])
         action = "强制刷新" if force_refresh else "普通请求"
@@ -423,6 +447,31 @@ class LuoshouMerchantPlugin(Star):
             f"round_id={round_info['round_id']} products={product_names or '空'}"
         )
         return data, False, ""
+
+    def _merchant_data_from_response(
+        self, response: Dict[str, Any], round_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        activity, products, history_groups = merchant_products_from_response(response)
+        return {
+            "raw_data": copy.deepcopy(response),
+            "activity": activity,
+            "products": products,
+            "history_groups": history_groups,
+            "round_info": self._serializable_round_info(round_info),
+        }
+
+    def _merchant_cache_entry_from_data(
+        self, data: Dict[str, Any], force_refresh: bool
+    ) -> Dict[str, Any]:
+        return {
+            "raw_data": copy.deepcopy(data.get("raw_data") or {}),
+            "activity": copy.deepcopy(data.get("activity") or {}),
+            "products": copy.deepcopy(data.get("products") or []),
+            "history_groups": copy.deepcopy(data.get("history_groups") or []),
+            "round_info": copy.deepcopy(data.get("round_info") or {}),
+            "fetched_at": int(time.time()),
+            "source_refresh": bool(force_refresh),
+        }
 
     def _next_refresh_time(self, now: datetime) -> datetime:
         current = now if now.tzinfo else now.replace(tzinfo=cn_tz())
@@ -460,16 +509,11 @@ class LuoshouMerchantPlugin(Star):
     ) -> Dict[str, Any]:
         raw_data = cached.get("raw_data")
         if isinstance(raw_data, dict):
-            activity, products, history_groups = merchant_products_from_response(raw_data)
-            return {
-                "raw_data": copy.deepcopy(raw_data),
-                "activity": activity,
-                "products": products,
-                "history_groups": history_groups,
-                "round_info": self._serializable_round_info(round_info),
-                "fetched_at": cached.get("fetched_at") or cached.get("cached_at"),
-                "cached_at": cached.get("cached_at"),
-            }
+            data = self._merchant_data_from_response(raw_data, round_info)
+            data["fetched_at"] = cached.get("fetched_at") or cached.get("cached_at")
+            data["cached_at"] = cached.get("cached_at")
+            data["source_refresh"] = cached.get("source_refresh")
+            return data
 
         data = copy.deepcopy(cached)
         data["round_info"] = self._serializable_round_info(round_info)
@@ -501,7 +545,7 @@ class LuoshouMerchantPlugin(Star):
     def _products_with_fallback_images(
         self, products: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        fallback = self._asset_data_uri("img/yuanxingshangren.png")
+        fallback = self._asset_data_uri("img/logo.cVSpb3sL.png")
         normalized = []
         for product in products:
             item = dict(product)
@@ -581,6 +625,17 @@ class LuoshouMerchantPlugin(Star):
             if shortcut:
                 shortcuts.add(shortcut)
         return {shortcut for shortcut in shortcuts if self._is_valid_shortcut(shortcut)}
+
+    def _shortcut_args(self, message: str, shortcuts: set[str]) -> Optional[str]:
+        for shortcut in sorted(shortcuts, key=len, reverse=True):
+            if message == shortcut:
+                return ""
+            if not message.startswith(shortcut):
+                continue
+            remainder = message[len(shortcut):]
+            if remainder and remainder[0].isspace():
+                return remainder.strip()
+        return None
 
     def _configured_shortcuts_for_event(self, event: AstrMessageEvent) -> List[str]:
         if not self.configured_shortcuts:

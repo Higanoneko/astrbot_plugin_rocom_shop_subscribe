@@ -11,7 +11,7 @@ from astrbot.api import logger
 
 
 class MerchantCache:
-    """Persistent per-round merchant query cache."""
+    """Temporary per-round merchant query cache."""
 
     def __init__(self, data_dir: str, filename: str = "rocom_shop_cache.json"):
         self.path = os.path.join(data_dir, filename)

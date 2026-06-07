@@ -1,5 +1,6 @@
 # Source reference clone used during development
 source_module/
+original_astrbot_plugin_rocom/
 
 # Python bytecode and local caches
 __pycache__/
