@@ -324,8 +324,6 @@ class LuoshouMerchantPlugin(Star):
         logger.warning("[Luoshou Merchant] 远行商人定时刷新连续为空，已暂停本轮重试")
 
     async def _refresh_cache_and_push_subscriptions(self) -> str:
-        # Scheduled checks always refresh and cache the current shop state.
-        # Subscription delivery is an extra step after the cache is updated.
         data, _, error = await self._refresh_current_merchant_data(allow_cache_fallback=False)
         if error or not data:
             return "empty"
@@ -418,32 +416,27 @@ class LuoshouMerchantPlugin(Star):
         if cached:
             data = self._merchant_data_from_cache(cached, round_info)
             return data, True, ""
-        return await self._refresh_current_merchant_data(
-            allow_cache_fallback=False,
-            force_refresh=False,
-        )
+        return await self._refresh_current_merchant_data(allow_cache_fallback=False)
 
     async def _refresh_current_merchant_data(
         self,
         allow_cache_fallback: bool,
-        force_refresh: bool = True,
     ) -> Tuple[Optional[Dict[str, Any]], bool, str]:
         round_info = current_merchant_round()
         cached = await self.cache.get(round_info["round_id"])
-        response = await self.client.get_merchant_info(refresh=force_refresh)
+        response = await self.client.get_merchant_info(refresh=True)
         if response is None:
             if allow_cache_fallback and cached:
                 return self._merchant_data_from_cache(cached, round_info), True, self.client.get_last_error()
             return None, False, self.client.get_last_error()
         data = self._merchant_data_from_response(response, round_info)
 
-        cache_entry = self._merchant_cache_entry_from_data(data, force_refresh)
+        cache_entry = self._merchant_cache_entry_from_data(data)
         await self.cache.set(round_info["round_id"], cache_entry)
         products = data.get("products") or []
         product_names = "、".join([str(product.get("name") or "未知商品") for product in products])
-        action = "强制刷新" if force_refresh else "普通请求"
         logger.info(
-            f"[Luoshou Merchant] 已{action}并写入远行商人缓存："
+            f"[Luoshou Merchant] 已刷新并写入远行商人缓存："
             f"round_id={round_info['round_id']} products={product_names or '空'}"
         )
         return data, False, ""
@@ -461,7 +454,7 @@ class LuoshouMerchantPlugin(Star):
         }
 
     def _merchant_cache_entry_from_data(
-        self, data: Dict[str, Any], force_refresh: bool
+        self, data: Dict[str, Any]
     ) -> Dict[str, Any]:
         return {
             "raw_data": copy.deepcopy(data.get("raw_data") or {}),
@@ -470,7 +463,7 @@ class LuoshouMerchantPlugin(Star):
             "history_groups": copy.deepcopy(data.get("history_groups") or []),
             "round_info": copy.deepcopy(data.get("round_info") or {}),
             "fetched_at": int(time.time()),
-            "source_refresh": bool(force_refresh),
+            "source_refresh": True,
         }
 
     def _next_refresh_time(self, now: datetime) -> datetime:

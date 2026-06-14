@@ -1,6 +1,6 @@
 name: astrbot_plugin_rocom_shop_subscribe
 display_name: 洛手远行商人订阅
 desc: 精简版洛克王国远行商人查询与订阅插件，支持按轮次缓存和全部商品订阅。
-version: "1.1.5"
+version: "1.1.6"
 author: Higanoneko
 repo: https://github.com/Higanoneko/astrbot_plugin_rocom_shop_subscribe
